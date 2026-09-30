@@ -92,17 +92,41 @@ fqdn_for() {
 }
 
 # ---------------------------------------------------------------------------
-# tfvars_require - terraform.tfvars must exist and be filled in.
+# tfvars_exists - just the file-presence check, no placeholder scan.
+#
+# Split out from tfvars_require so a command that only needs foundation's
+# settings (which never include a Carbide password or an LE email) is not
+# blocked on placeholders it will never read. See _tfvars_placeholders below
+# for the scoped version those commands use instead.
 # ---------------------------------------------------------------------------
-tfvars_require() {
+tfvars_exists() {
     if [ ! -f "$TFVARS_FILE" ]; then
         err "terraform.tfvars not found at ${TFVARS_FILE}"
         hint "cp terraform.tfvars.example terraform.tfvars   # then fill it in"
         return 1
     fi
+    return 0
+}
+
+# _tfvars_placeholders <file> - ##UPDATE## markers on actual assignment
+# lines only. Deliberately excludes prose (the instructions at the top of
+# terraform.tfvars.example mention the literal marker while explaining what
+# it means, which is not itself a placeholder to fill in).
+_tfvars_placeholders() {
+    grep -nE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_-]*[[:space:]]*=.*##UPDATE##' "$1" || true
+}
+
+# ---------------------------------------------------------------------------
+# tfvars_require - terraform.tfvars must exist AND have every placeholder in
+# the WHOLE file filled in. Used before a full build, where every setting is
+# in play. A single component that only needs some of those settings should
+# use tfvars_exists plus its own generated file - see tofu_prepare.
+# ---------------------------------------------------------------------------
+tfvars_require() {
+    tfvars_exists || return 1
 
     local placeholders
-    placeholders=$(grep -n '##UPDATE##' "$TFVARS_FILE" || true)
+    placeholders=$(_tfvars_placeholders "$TFVARS_FILE")
     if [ -n "$placeholders" ]; then
         err "terraform.tfvars still has ##UPDATE## placeholders:"
         printf '%s\n' "$placeholders" | sed 's/^/    /' >&2

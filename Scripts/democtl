@@ -465,7 +465,13 @@ cmd_foundation() {
 _foundation_up() {
     header "Foundation (persistent tier)"
     _check_tools >/dev/null
-    tfvars_require || exit 1
+    # File-existence only here, not the full-file placeholder scan: settings
+    # like the Carbide password or the Let's Encrypt email belong to
+    # rancher-manager, not foundation, and get checked when THAT component
+    # is prepared (tofu_prepare, below, via tofu_apply). Nothing here skips
+    # cert-manager or Let's Encrypt - it only defers the check to the
+    # component that actually uses them.
+    tfvars_exists || exit 1
     aws_show_identity || exit 1
     aws_check_route53 || exit 1
 

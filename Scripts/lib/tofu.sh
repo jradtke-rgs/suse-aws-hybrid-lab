@@ -70,11 +70,25 @@ tofu_init() {
 
 # ---------------------------------------------------------------------------
 # tofu_prepare <component> - everything that must happen before plan/apply.
+#
+# The placeholder check runs against the GENERATED per-component file, not
+# the whole root terraform.tfvars - so `foundation up` never demands a
+# Carbide password or a Let's Encrypt email just because some other,
+# unrelated component still has one as ##UPDATE##. Whole-file coverage is
+# `tfvars_require`, used by the general `preflight` before a full build.
 # ---------------------------------------------------------------------------
 tofu_prepare() {
-    local name="$1"
+    local name="$1" generated placeholders
     comp_has_tofu "$name" || return 0
-    tfvars_generate "$name" >/dev/null
+
+    generated=$(tfvars_generate "$name")
+    placeholders=$(_tfvars_placeholders "$generated")
+    if [ -n "$placeholders" ]; then
+        err "${name}: terraform.tfvars still has ##UPDATE## placeholders this component needs:"
+        printf '%s\n' "$placeholders" | sed "s|^${generated}|    terraform.tfvars|" >&2
+        die "fill those in and retry"
+    fi
+
     tofu_init "$name"
 }
 
