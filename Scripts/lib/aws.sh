@@ -195,9 +195,43 @@ aws_state_key() {
     printf '%s/%s/terraform.tfstate' "$STATE_PREFIX" "$1"
 }
 
-# aws_state_exists <component> - has this component ever been applied?
+# aws_state_exists <component> - is this component actually deployed right
+# now?
+#
+# NOT the same question as "does the state object exist in S3". A `tofu
+# destroy` empties a state file's `resources` array but does not delete the
+# object itself - a plain head-object check (what this used to do) reports
+# "deployed" forever after the first apply, even right after destroying
+# everything. Confirmed live: `democtl list` showed foundation as deployed
+# immediately after a full `foundation down` that destroyed all 14 of its
+# resources. Left uncaught, `_require_foundation` would have let `democtl
+# build` proceed against remote-state outputs that no longer exist, turning
+# a clean "run foundation up first" into a confusing OpenTofu plan-time
+# error instead.
+#
+# Downloads the state object and checks its resources array, rather than a
+# cheap head-object. State files are small (a few KB), and this is never
+# called in a hot loop, so the extra cost is negligible next to the
+# correctness it buys.
 aws_state_exists() {
     tfvars_load_identity
-    aws s3api head-object --bucket "$STATE_BUCKET" --key "$(aws_state_key "$1")" \
-        >/dev/null 2>&1
+    local content
+    content=$(aws s3 cp "s3://${STATE_BUCKET}/$(aws_state_key "$1")" - 2>/dev/null) || return 1
+    [ -n "$content" ] || return 1
+    printf '%s' "$content" | _state_has_resources
+}
+
+_state_has_resources() {
+    if have jq; then
+        jq -e '(.resources // []) | length > 0' >/dev/null 2>&1
+    else
+        python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if d.get("resources") else 1)
+'
+    fi
 }
