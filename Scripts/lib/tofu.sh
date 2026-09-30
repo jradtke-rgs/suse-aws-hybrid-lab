@@ -71,21 +71,48 @@ tofu_init() {
 # ---------------------------------------------------------------------------
 # tofu_prepare <component> - everything that must happen before plan/apply.
 #
-# The placeholder check runs against the GENERATED per-component file, not
-# the whole root terraform.tfvars - so `foundation up` never demands a
-# Carbide password or a Let's Encrypt email just because some other,
-# unrelated component still has one as ##UPDATE##. Whole-file coverage is
-# `tfvars_require`, used by the general `preflight` before a full build.
+# The placeholder check is scoped to what this component actually USES, not
+# merely what it DECLARES. Those are different sets: every component
+# symlinks the same common-vars.tf, so "declared by this component" is
+# identical across every component in the repo - checking against it would
+# make `foundation up` demand a Carbide password and a Let's Encrypt email
+# neither foundation/main.tf nor foundation/outputs.tf ever reference.
+# "Used" means textually referenced as var.NAME somewhere in this
+# component's OWN main.tf/outputs.tf (never variables.tf or common-vars.tf -
+# those only declare, they have no var.NAME references of their own, which
+# is exactly why grepping them too would be harmless but pointless).
+# Whole-file coverage is `tfvars_require`, used by the general `preflight`
+# before a full build, where every enabled component's needs are in play.
 # ---------------------------------------------------------------------------
 tofu_prepare() {
-    local name="$1" generated placeholders
+    local name="$1" dir generated placeholders used_vars line key filtered=""
     comp_has_tofu "$name" || return 0
+    dir=$(comp_field "$name" DIR)
 
     generated=$(tfvars_generate "$name")
-    placeholders=$(_tfvars_placeholders "$generated")
+
+    used_vars=$(grep -ohE '\bvar\.[A-Za-z_][A-Za-z0-9_]*' \
+        "${dir}/main.tf" "${dir}/outputs.tf" 2>/dev/null \
+        | sed 's/^var\.//' | sort -u)
+
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        key=$(printf '%s' "$line" | sed -E 's/^[0-9]+:[[:space:]]*([A-Za-z_][A-Za-z0-9_-]*).*/\1/')
+        # shellcheck disable=SC2086  # used_vars is a deliberate word list
+        if contains "$key" $used_vars; then
+            filtered="${filtered}${line}
+"
+        fi
+    done <<EOF
+$(_tfvars_placeholders "$generated")
+EOF
+    placeholders="${filtered%$'\n'}"
+
     if [ -n "$placeholders" ]; then
         err "${name}: terraform.tfvars still has ##UPDATE## placeholders this component needs:"
-        printf '%s\n' "$placeholders" | sed "s|^${generated}|    terraform.tfvars|" >&2
+        # grep with a single file target prints no filename prefix, just
+        # "<line>:<content>" - matching tfvars_require's whole-file version.
+        printf '%s\n' "$placeholders" | sed 's/^/    /' >&2
         die "fill those in and retry"
     fi
 

@@ -170,4 +170,20 @@ labdata_retention_days = 90
 # =============================================================================
 # COMPONENT: rancher-manager  (ephemeral - billed by the hour)
 # =============================================================================
-# Settings arrive with the component in Phase 3.
+hostname_rancher = "rancher"
+
+# t3.large is the smallest type that runs RKE2 + Rancher + cert-manager
+# together without swapping - see variables.tf for the reasoning. 50GB gp3
+# covers the stack's real ~15-20GB footprint with headroom.
+rancher_instance_type    = "t3.large"
+rancher_root_volume_size = 50
+
+# Coupled to rke2_version/cert_manager_version above via the Rancher chart's
+# kubeVersion ceiling - run `democtl versions` before changing any of them.
+rancher_version = "2.15.2"
+
+# Leave both empty to install the public rancher-stable chart with images
+# sourced via registries.yaml (Carbide's own chart hosting is unconfirmed -
+# see rancher-manager/README.md).
+carbide_rancher_chart = ""
+carbide_rancher_image = ""

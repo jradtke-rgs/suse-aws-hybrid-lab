@@ -76,35 +76,6 @@ def _scan_depth(text, depth, in_string):
     return depth, in_string
 
 
-def strip_trailing_comment(text):
-    """Drop a trailing # or // comment that sits outside any string.
-
-    The generated file is data, not documentation - the user's notes belong
-    in the terraform.tfvars they actually edit. Dropping them here also keeps
-    the generated file passing `tofu fmt -check`, since fmt aligns trailing
-    comments into their own column.
-    """
-    index = 0
-    in_string = False
-    length = len(text)
-    while index < length:
-        char = text[index]
-        if in_string:
-            if char == "\\":
-                index += 2
-                continue
-            if char == '"':
-                in_string = False
-        elif char == '"':
-            in_string = True
-        elif char == "#":
-            return text[:index].rstrip()
-        elif char == "/" and index + 1 < length and text[index + 1] == "/":
-            return text[:index].rstrip()
-        index += 1
-    return text.rstrip()
-
-
 def parse_tfvars(path):
     """Yield (name, raw_value_text) pairs, preserving the original text."""
     with open(path, encoding="utf-8") as handle:
@@ -139,9 +110,17 @@ def parse_tfvars(path):
                 value_lines.append(lines[index].rstrip("\n"))
                 depth, in_string = _scan_depth(lines[index], depth, in_string)
 
+        # The trailing comment on a single-line value is kept, not stripped:
+        # a ##UPDATE## marker IS a trailing comment in HCL, and a prior
+        # version of this function stripped it as decoration - which
+        # silently defeated the whole ##UPDATE## safety check downstream
+        # (tofu_prepare's per-component scan never saw it, so `democtl
+        # build` would have applied with secrets still blank). Confirmed
+        # live while testing rancher-manager. `tfvars_generate` now runs
+        # `tofu fmt` on its own output instead of hand-stripping comments
+        # to satisfy `tofu fmt -check` - that was the only reason this
+        # function existed.
         raw = "\n".join(value_lines).strip()
-        if len(value_lines) == 1:
-            raw = strip_trailing_comment(raw)
         entries.append((name, raw))
         index += 1
 

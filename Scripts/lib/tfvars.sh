@@ -206,5 +206,13 @@ tfvars_generate() {
         2>/dev/null \
         || die "${name}: failed to generate ${GENERATED_TFVARS}"
 
+    # Column-align trailing comments (including a ##UPDATE## marker) the
+    # same way `tofu fmt` would, instead of the generator hand-stripping
+    # them - a prior version stripped comments entirely to satisfy
+    # `tofu fmt -check`, which silently ate the ##UPDATE## marker along
+    # with them. tofu fmt only touches whitespace, never content, so this
+    # is the safe way to stay fmt-clean.
+    tofu fmt "$out" >/dev/null 2>&1 || true
+
     printf '%s' "$out"
 }
