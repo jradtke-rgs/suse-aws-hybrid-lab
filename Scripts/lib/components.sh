@@ -138,8 +138,17 @@ _components_validate_deps() {
         for dep in ${CM_DEPS[$i]}; do
             comp_index "$dep" >/dev/null || \
                 die "${CM_NAME[$i]}: DEPENDS_ON names '${dep}', which is not a component"
-            [ "$dep" = "${CM_NAME[$i]}" ] && \
+            # NOT `[ cond ] && die ...`: when the LAST dependency checked by
+            # the LAST component is a normal (non-self) dependency, that
+            # bare test evaluates false, its exit status becomes this
+            # function's return value with nothing after to mask it, and
+            # `set -e` kills the whole script right there - silently, since
+            # `die` is never reached to print anything. Confirmed live: this
+            # was unreachable until a second component with a real
+            # DEPENDS_ON existed to exercise the inner loop at all.
+            if [ "$dep" = "${CM_NAME[$i]}" ]; then
                 die "${CM_NAME[$i]}: DEPENDS_ON lists itself"
+            fi
         done
     done
 }

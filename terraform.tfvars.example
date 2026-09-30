@@ -34,7 +34,12 @@ owner       = "your-name" ##UPDATE##
 aws_region         = "us-east-2"
 availability_zones = ["us-east-2a"]
 
-vpc_cidr = "10.0.0.0/16"
+# 172.16.0.0/12 space, not 10.0.0.0/8 - chosen deliberately so this hybrid
+# lab's VPC cannot collide with a typical homelab's 10.x addressing if you
+# ever route or peer the two. Change it before the first
+# `democtl foundation up` if 172.16.0.0/16 overlaps something you already
+# run - AWS cannot change a VPC's CIDR in place afterward.
+vpc_cidr = "172.16.0.0/16"
 
 # A NAT Gateway costs more per month than everything else here combined, and
 # every instance in this lab sits in a public subnet. Left off deliberately.

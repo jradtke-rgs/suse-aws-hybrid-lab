@@ -29,6 +29,11 @@ set -euo pipefail
 . "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 DRY_RUN=0
+# Set only by _parse_select_flags, read only by _select. Kept as script
+# globals rather than passed through the $(_select ...) call - see the
+# comment on _select for why that boundary matters.
+SELECT_ONLY=""
+SELECT_WITH=""
 
 # =============================================================================
 # preflight
@@ -210,32 +215,49 @@ cmd_list() {
 # =============================================================================
 # Selecting what to act on
 # =============================================================================
-# _select <lifecycle> [--only X | --with X,Y] - the ordered list of
-# components a build or destroy should touch.
-_select() {
-    local lifecycle="$1"; shift
-    local only="" with="" arg
-
+# _parse_select_flags [--only X | --with X,Y] [--dry-run]
+#
+# Sets DRY_RUN / SELECT_ONLY / SELECT_WITH for _select to read. Callers MUST
+# call this directly - never as `x=$(_parse_select_flags ...)`. A command
+# substitution runs in a subshell, and a subshell's variable assignments
+# vanish the moment it exits; DRY_RUN=1 set that way is invisible to the
+# parent the instant the subshell returns. Confirmed live: `build --dry-run`
+# silently fell through to a real build because this exact mutation was
+# previously done inside the function _select captured via `$(...)`.
+_parse_select_flags() {
+    SELECT_ONLY="" SELECT_WITH=""
     while [ $# -gt 0 ]; do
         case "$1" in
-            --only) only="$2"; shift 2 ;;
-            --with) with="$2"; shift 2 ;;
+            --only) SELECT_ONLY="$2"; shift 2 ;;
+            --with) SELECT_WITH="$2"; shift 2 ;;
             --dry-run) DRY_RUN=1; shift ;;
             *) die "unexpected argument: $1" ;;
         esac
     done
+}
 
-    components_discover
-    local wanted=""
+# _select <lifecycle> - the ordered list of components a build or destroy
+# should touch, using SELECT_ONLY/SELECT_WITH already set by
+# _parse_select_flags.
+#
+# Deliberately pure: reads CM_* and SELECT_*, prints a list, mutates nothing
+# the caller needs afterward. That is what makes it safe to call as
+# `plan=$(_select ephemeral)` - the whole point of a command substitution is
+# a subshell, so a function invoked that way can never hand anything back
+# except what it prints on stdout. Callers run `components_discover` and
+# `_parse_select_flags` THEMSELVES, directly, before calling this - never
+# inside it - for exactly that reason.
+_select() {
+    local lifecycle="$1" arg wanted=""
 
-    if [ -n "$only" ]; then
-        for arg in $(printf '%s' "$only" | tr ',' ' '); do
+    if [ -n "$SELECT_ONLY" ]; then
+        for arg in $(printf '%s' "$SELECT_ONLY" | tr ',' ' '); do
             comp_index "$arg" >/dev/null || die "unknown component: ${arg}"
             wanted="${wanted} ${arg}"
         done
     else
         wanted=$(components_enabled "$lifecycle")
-        for arg in $(printf '%s' "$with" | tr ',' ' '); do
+        for arg in $(printf '%s' "$SELECT_WITH" | tr ',' ' '); do
             [ -n "$arg" ] || continue
             comp_index "$arg" >/dev/null || die "unknown component: ${arg}"
             contains "$arg" $wanted || wanted="${wanted} ${arg}"
@@ -260,8 +282,11 @@ _select() {
 # build
 # =============================================================================
 cmd_build() {
+    components_discover
+    _parse_select_flags "$@"
+
     local plan
-    plan=$(_select ephemeral "$@")
+    plan=$(_select ephemeral)
 
     [ -n "${plan// /}" ] || die "nothing to build - no ephemeral component is enabled"
 
@@ -313,8 +338,11 @@ _require_foundation() {
 # destroy
 # =============================================================================
 cmd_destroy() {
+    components_discover
+    _parse_select_flags "$@"
+
     local plan reversed name
-    plan=$(_select ephemeral "$@")
+    plan=$(_select ephemeral)
 
     [ -n "${plan// /}" ] || die "nothing to destroy"
 
@@ -378,11 +406,12 @@ _print_plan() {
 # =============================================================================
 cmd_plan() {
     local targets name
+    components_discover
     if [ $# -gt 0 ]; then
-        components_discover
         comp_index "$1" >/dev/null || die "unknown component: $1"
         targets="$1"
     else
+        _parse_select_flags
         targets=$(_select ephemeral)
     fi
     for name in $targets; do

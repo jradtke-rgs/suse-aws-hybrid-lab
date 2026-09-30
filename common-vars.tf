@@ -59,9 +59,20 @@ variable "availability_zones" {
 }
 
 variable "vpc_cidr" {
-  description = "CIDR block for the lab VPC."
+  description = <<-EOT
+    CIDR block for the lab VPC. Defaults to 172.16.0.0/16 - deliberately
+    OUTSIDE 10.0.0.0/8, because this repo is a HYBRID lab: if you route or
+    peer it to an on-prem network that also uses RFC1918 space (a homelab,
+    say), any overlap breaks routing on whichever side has the smaller
+    prefix. 172.16.0.0/12 is large enough that a single lab's /16 out of it
+    is unlikely to collide with home-router defaults (192.168.0.0/16) or a
+    homelab's own 10.0.0.0/8 usage - but if 172.16.0.0/16 overlaps
+    something you already run, change this before the first
+    `democtl foundation up`. AWS cannot change a VPC's CIDR in place: fixing
+    it after the fact means tearing foundation down and rebuilding it.
+  EOT
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "172.16.0.0/16"
 }
 
 variable "enable_nat_gateway" {
