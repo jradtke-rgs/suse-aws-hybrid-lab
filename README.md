@@ -67,6 +67,36 @@ Scripts/democtl build             # the lab
 Scripts/democtl urls
 ```
 
+### Quick start — repeat deploys
+
+The fast path once you already have a working `terraform.tfvars` for this
+lab: keep a **populated** copy staged outside the repo, named for the
+project, and copy it straight in instead of re-answering every
+`##UPDATE##` marker on each fresh clone.
+
+```bash
+mkdir -p ~/Developer/Projects && cd $_
+git clone git@github.com-jradtke-rgs:jradtke-rgs/suse-aws-hybrid-lab.git
+cd suse-aws-hybrid-lab
+
+cp ~/Developer/Projects/terraform.tfvars.example-suse-aws-hybrid-lab terraform.tfvars
+
+Scripts/democtl preflight
+Scripts/democtl foundation up
+Scripts/democtl build
+Scripts/democtl urls
+```
+
+The staged file's name is **not** special to `democtl` - only the copy at
+`terraform.tfvars` in the repo root is read. Keeping the staged copy one
+directory up (not inside any checkout) means it survives an archive/re-clone
+cycle the same way the S3 state bucket does - see the note on `foundation`
+below. `democtl preflight` diffs it against `terraform.tfvars.example` and
+warns (not a hard failure) about anything the example now defines that the
+staged copy predates - a new component's settings, say - so a stale staged
+file says so up front instead of quietly deploying with defaults you never
+chose.
+
 Tearing down:
 
 ```bash
