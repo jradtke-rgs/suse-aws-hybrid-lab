@@ -1,0 +1,712 @@
+#!/usr/bin/env bash
+# =============================================================================
+# democtl - control script for the SUSE/RGS AWS hybrid lab
+# =============================================================================
+# This file is a dispatcher. It knows about lifecycles and ordering; it does
+# not know the name of a single product. Everything deployable is discovered
+# at runtime from components/*/component.conf, so adding Harbor or SUSE
+# Security means adding a directory - never editing this file.
+#
+# The real work lives in Scripts/lib/:
+#   common.sh      logging, guards, repo location   (the entry point)
+#   components.sh  discovery, manifests, topo sort
+#   tfvars.sh      reading terraform.tfvars, per-component var files
+#   aws.sh         identity, Route53, the state bucket
+#   tofu.sh        running OpenTofu, running hooks
+# =============================================================================
+
+# Component names are the unit of currency here, and they are passed around
+# as space-separated lists (bash 3.2 has no way to return an array). Every
+# name is validated at discovery against [a-z0-9-], so splitting one of
+# these lists on whitespace is safe by construction, not by luck. The same
+# reasoning covers the `eval` in `ssh`: the string being evaluated is an
+# ssh_command output this repo generated, not user input.
+# shellcheck disable=SC2086,SC2294
+
+set -euo pipefail
+
+# shellcheck source=lib/common.sh
+. "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+DRY_RUN=0
+
+# =============================================================================
+# preflight
+# =============================================================================
+cmd_preflight() {
+    header "Preflight"
+    local failures=0
+
+    _check_tools || failures=$((failures + 1))
+    tfvars_require || failures=$((failures + 1))
+    tfvars_check_drift
+
+    if [ "$failures" -eq 0 ]; then
+        aws_show_identity || failures=$((failures + 1))
+        aws_check_route53 || failures=$((failures + 1))
+        _check_state_bucket || failures=$((failures + 1))
+        _check_versions_pinned
+        _check_letsencrypt
+        _run_component_preflights || failures=$((failures + 1))
+    fi
+
+    echo >&2
+    if [ "$failures" -gt 0 ]; then
+        die "preflight found ${failures} problem(s) - fix them before building"
+    fi
+    ok "preflight passed"
+}
+
+_check_tools() {
+    local failed=0
+
+    require_cmd tofu "brew install opentofu   (or https://opentofu.org/docs/intro/install/)"
+    local tv
+    tv=$(tofu_version)
+    if [ -n "$tv" ] && ! tofu_version_ok "$tv" "$TOFU_MIN_VERSION"; then
+        warn "OpenTofu ${tv} is older than ${TOFU_MIN_VERSION}"
+        hint "state locking uses the S3 native lockfile, which needs ${TOFU_MIN_VERSION}+; without it, two concurrent runs can corrupt state"
+    else
+        ok "OpenTofu ${tv:-unknown}"
+    fi
+
+    require_cmd aws "brew install awscli"
+    require_cmd python3 "python3 is used to filter terraform.tfvars per component"
+    have jq || dim "jq not found - falling back to python3 for JSON (fine, just slower)"
+
+    # bash 3.2 is what macOS ships and everything here is written for it.
+    # Say so, so nobody wastes time installing a newer one.
+    dim "bash ${BASH_VERSION} (3.2 is supported - no upgrade needed)"
+
+    return $failed
+}
+
+_check_state_bucket() {
+    tfvars_load_identity
+    if aws_state_bucket_exists; then
+        ok "state bucket s3://${STATE_BUCKET}"
+        return 0
+    fi
+    warn "state bucket s3://${STATE_BUCKET} does not exist yet"
+    hint "run: democtl foundation up   (it creates and configures the bucket first)"
+    return 0
+}
+
+# Version coupling is the failure this lab hits most often, and it is
+# invisible until Helm refuses the chart 12 minutes into a bootstrap. Check
+# it against the live chart index instead of trusting a comment in a file.
+_check_versions_pinned() {
+    local rke2 rancher
+    rke2=$(get_tfvar rke2_version)
+    rancher=$(get_tfvar rancher_version)
+
+    if [ -z "$rke2" ]; then
+        warn "rke2_version is empty ('latest stable')"
+        hint "latest stable is currently ABOVE the Rancher chart's Kubernetes ceiling - pin it. Run: democtl versions"
+        return 0
+    fi
+    dim "rke2_version ${rke2}${rancher:+, rancher_version ${rancher}}  (run 'democtl versions' to check the pairing)"
+}
+
+_check_letsencrypt() {
+    local le_env
+    le_env=$(get_tfvar letsencrypt_environment "staging")
+    [ "$le_env" = "production" ] || return 0
+
+    tfvars_load_identity
+    if aws s3 ls "s3://${STATE_BUCKET}/${LABDATA_PREFIX}/tls/" >/dev/null 2>&1; then
+        ok "Let's Encrypt: production, with a certificate backup to restore from"
+        return 0
+    fi
+    warn "letsencrypt_environment is 'production' and no certificate backup exists yet"
+    hint "production allows 5 duplicate certificates per week per name - a few rebuild cycles will exhaust it"
+    hint "use 'staging' until the backup/restore path has run at least once on this account"
+}
+
+_run_component_preflights() {
+    components_discover
+    local name failed=0
+    for name in $(components_enabled any); do
+        comp_hook "$name" preflight >/dev/null || continue
+        run_hook "$name" preflight || failed=1
+    done
+    return $failed
+}
+
+# =============================================================================
+# versions - check the version coupling against what is actually published
+# =============================================================================
+cmd_versions() {
+    header "Version coupling"
+    require_cmd python3 ""
+
+    local rke2 rancher certmgr
+    rke2=$(get_tfvar rke2_version)
+    rancher=$(get_tfvar rancher_version)
+    certmgr=$(get_tfvar cert_manager_version)
+
+    say "configured:"
+    say "  rke2_version          ${rke2:-<empty - latest stable>}"
+    say "  rancher_version       ${rancher:-<unset>}"
+    say "  cert_manager_version  ${certmgr:-<unset>}"
+    echo
+
+    info "fetching the published Rancher chart index..."
+    curl -sfL https://releases.rancher.com/server-charts/stable/index.yaml 2>/dev/null \
+        | python3 "${REPO_ROOT}/Scripts/lib/check_versions.py" \
+            --rke2 "$rke2" --rancher "$rancher" --cert-manager "$certmgr" \
+        || warn "could not reach releases.rancher.com - skipping the live check"
+}
+
+# =============================================================================
+# list
+# =============================================================================
+cmd_list() {
+    components_discover
+    tfvars_load_identity
+
+    if [ "${#CM_NAME[@]}" -eq 0 ]; then
+        warn "no components found under ${COMPONENTS_DIR}"
+        hint "democtl new-component <name>   creates one from the template"
+        return 0
+    fi
+
+    local have_bucket=0
+    aws_state_bucket_exists && have_bucket=1
+
+    printf '\n%-24s %-11s %-9s %-9s %s\n' "COMPONENT" "LIFECYCLE" "ENABLED" "DEPLOYED" "DEPENDS ON"
+    printf '%-24s %-11s %-9s %-9s %s\n' \
+        "------------------------" "-----------" "---------" "---------" "----------"
+
+    local name enabled deployed deps
+    for name in $(components_all); do
+        if [ "$(comp_field "$name" MANDATORY)" = "true" ]; then
+            enabled="always"
+        elif comp_is_enabled "$name"; then
+            enabled="yes"
+        else
+            enabled="no"
+        fi
+
+        if [ "$have_bucket" -eq 0 ]; then
+            deployed="-"
+        elif aws_state_exists "$name"; then
+            deployed="yes"
+        else
+            deployed="no"
+        fi
+
+        deps=$(comp_field "$name" DEPENDS_ON)
+        printf '%-24s %-11s %-9s %-9s %s\n' \
+            "$name" "$(comp_field "$name" LIFECYCLE)" "$enabled" "$deployed" "${deps:-<none>}"
+    done
+    echo
+
+    dim "listed in dependency order; 'deployed' means state exists in s3://${STATE_BUCKET}"
+    [ "$have_bucket" -eq 0 ] && dim "state bucket not reachable - deployed status unknown"
+    return 0
+}
+
+# =============================================================================
+# Selecting what to act on
+# =============================================================================
+# _select <lifecycle> [--only X | --with X,Y] - the ordered list of
+# components a build or destroy should touch.
+_select() {
+    local lifecycle="$1"; shift
+    local only="" with="" arg
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --only) only="$2"; shift 2 ;;
+            --with) with="$2"; shift 2 ;;
+            --dry-run) DRY_RUN=1; shift ;;
+            *) die "unexpected argument: $1" ;;
+        esac
+    done
+
+    components_discover
+    local wanted=""
+
+    if [ -n "$only" ]; then
+        for arg in $(printf '%s' "$only" | tr ',' ' '); do
+            comp_index "$arg" >/dev/null || die "unknown component: ${arg}"
+            wanted="${wanted} ${arg}"
+        done
+    else
+        wanted=$(components_enabled "$lifecycle")
+        for arg in $(printf '%s' "$with" | tr ',' ' '); do
+            [ -n "$arg" ] || continue
+            comp_index "$arg" >/dev/null || die "unknown component: ${arg}"
+            contains "$arg" $wanted || wanted="${wanted} ${arg}"
+        done
+    fi
+
+    [ -n "${wanted// /}" ] || return 0
+
+    # components_order pulls in dependencies; filter back down to the tier
+    # we were asked for, so a build never tries to apply foundation.
+    local name out=""
+    # shellcheck disable=SC2086
+    for name in $(components_order $wanted); do
+        [ "$(comp_field "$name" LIFECYCLE)" = "$lifecycle" ] || continue
+        out="${out} ${name}"
+    done
+    # shellcheck disable=SC2086
+    printf '%s\n' $out
+}
+
+# =============================================================================
+# build
+# =============================================================================
+cmd_build() {
+    local plan
+    plan=$(_select ephemeral "$@")
+
+    [ -n "${plan// /}" ] || die "nothing to build - no ephemeral component is enabled"
+
+    # shellcheck disable=SC2086
+    components_check_deps_enabled $plan || die "fix the enable flags above and retry"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        header "Build plan (dry run)"
+        _print_plan "apply" $plan
+        return 0
+    fi
+
+    cmd_preflight
+    _require_foundation
+
+    header "Build"
+    aws_show_identity
+
+    local name
+    for name in $plan; do
+        info "==> ${name}"
+        if comp_has_tofu "$name"; then
+            tofu_apply "$name"
+        fi
+        run_hook "$name" post-apply
+        ok "    ${name} done"
+    done
+
+    cmd_urls
+}
+
+# Mandatory persistent components must already exist. They are not built by
+# `build` - that is the whole point of the two tiers - so say exactly which
+# command creates them rather than failing inside tofu.
+_require_foundation() {
+    components_discover
+    local name
+    for name in $(components_all); do
+        comp_is_persistent "$name" || continue
+        [ "$(comp_field "$name" MANDATORY)" = "true" ] || continue
+        aws_state_exists "$name" && continue
+        err "${name} is required but has never been deployed"
+        hint "run: democtl foundation up"
+        exit 1
+    done
+}
+
+# =============================================================================
+# destroy
+# =============================================================================
+cmd_destroy() {
+    local plan reversed name
+    plan=$(_select ephemeral "$@")
+
+    [ -n "${plan// /}" ] || die "nothing to destroy"
+
+    # Reverse dependency order: a dependency is torn down only after
+    # everything that depends on it is gone.
+    reversed=""
+    for name in $plan; do reversed="${name} ${reversed}"; done
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        header "Destroy plan (dry run)"
+        _print_plan "destroy" $reversed
+        return 0
+    fi
+
+    tfvars_load_identity
+    header "Destroy"
+    aws_show_identity
+    warn "this destroys every EPHEMERAL component listed below."
+    warn "the persistent tier (VPC, IAM, key pair, S3 state and lab data) is NOT touched."
+    for name in $reversed; do printf '    %s\n' "$name" >&2; done
+    echo >&2
+
+    confirm_typed "$ENVIRONMENT" "type the environment name (${ENVIRONMENT}) to confirm: " \
+        || die "cancelled - nothing destroyed"
+
+    for name in $reversed; do
+        info "==> ${name}"
+        # pre-destroy runs first and must succeed: it is where a component
+        # saves anything expensive to recreate, such as the TLS certificate.
+        run_hook "$name" pre-destroy
+        if comp_has_tofu "$name"; then
+            tofu_destroy "$name"
+        fi
+        ok "    ${name} destroyed"
+    done
+
+    header "Destroyed"
+    dim "the persistent tier is still in place - 'democtl build' brings the lab back"
+}
+
+_print_plan() {
+    local action="$1"; shift
+    local name step=1
+    for name in "$@"; do
+        printf '  %d. %-24s %s\n' "$step" "$name" "$(comp_field "$name" DESCRIPTION)"
+        if comp_has_tofu "$name"; then
+            printf '     %s\n' "tofu ${action} in $(comp_field "$name" DIR | sed "s|^${REPO_ROOT}/||")"
+        fi
+        local hook
+        for hook in $( [ "$action" = "apply" ] && echo post-apply || echo pre-destroy ); do
+            comp_hook "$name" "$hook" >/dev/null && printf '     %s\n' "hooks/${hook}.sh"
+        done
+        step=$((step + 1))
+    done
+    echo
+    dim "dry run - nothing was changed"
+}
+
+# =============================================================================
+# plan / output / urls / status
+# =============================================================================
+cmd_plan() {
+    local targets name
+    if [ $# -gt 0 ]; then
+        components_discover
+        comp_index "$1" >/dev/null || die "unknown component: $1"
+        targets="$1"
+    else
+        targets=$(_select ephemeral)
+    fi
+    for name in $targets; do
+        header "plan: ${name}"
+        comp_has_tofu "$name" && tofu_plan "$name"
+    done
+}
+
+cmd_output() {
+    local targets name
+    if [ $# -gt 0 ]; then
+        components_discover
+        targets="$1"
+    else
+        targets=$(components_enabled any)
+    fi
+    for name in $targets; do
+        comp_has_tofu "$name" || continue
+        aws_state_exists "$name" || continue
+        header "${name}"
+        tofu_output_all "$name"
+    done
+}
+
+cmd_urls() {
+    components_discover
+    header "URLs"
+    local name out found=0
+    for name in $(components_enabled any); do
+        out=$(run_hook_quiet "$name" urls) || out=""
+        if [ -z "$out" ] && comp_has_tofu "$name" && aws_state_exists "$name"; then
+            # Fall back to a *_url output so a component gets this for free.
+            out=$(component_output "$name" "${name//-/_}_url" 2>/dev/null || true)
+            [ -n "$out" ] && out="$(printf '%s\t%s' "$name" "$out")"
+        fi
+        [ -n "$out" ] || continue
+        printf '%s\n' "$out" | while IFS=$'\t' read -r label url; do
+            [ -n "$url" ] || continue
+            printf '  %-22s %s\n' "$label" "$url"
+        done
+        found=1
+    done
+    [ "$found" -eq 0 ] && dim "nothing deployed yet"
+    return 0
+}
+
+cmd_status() {
+    components_discover
+    header "Status"
+    local name out
+    for name in $(components_enabled any); do
+        out=$(run_hook_quiet "$name" status) || out=""
+        if [ -z "$out" ]; then
+            if aws_state_exists "$name"; then out="deployed"; else out="not deployed"; fi
+        fi
+        printf '  %-24s %s\n' "$name" "$out"
+    done
+}
+
+# =============================================================================
+# foundation - the persistent tier
+# =============================================================================
+cmd_foundation() {
+    local action="${1:-status}"; shift || true
+    components_discover
+    tfvars_load_identity
+
+    local persistent
+    persistent=$(components_enabled persistent)
+    [ -n "${persistent// /}" ] || die "no persistent components are defined"
+
+    case "$action" in
+        up)     _foundation_up $persistent ;;
+        status) _foundation_status $persistent ;;
+        down)   _foundation_down "$@" ;;
+        *)      die "foundation: expected up, down, or status (got '${action}')" ;;
+    esac
+}
+
+_foundation_up() {
+    header "Foundation (persistent tier)"
+    _check_tools >/dev/null
+    tfvars_require || exit 1
+    aws_show_identity || exit 1
+    aws_check_route53 || exit 1
+
+    # The bucket is created here, by the AWS CLI, before any tofu runs. That
+    # is what lets foundation itself use the S3 backend from its first apply
+    # with no bootstrap exception anywhere.
+    aws_state_bucket_ensure
+
+    local name
+    for name in "$@"; do
+        info "==> ${name}"
+        comp_has_tofu "$name" && tofu_apply "$name"
+        run_hook "$name" post-apply
+        ok "    ${name} ready"
+    done
+
+    header "Foundation ready"
+    dim "cost while nothing ephemeral is running: S3 storage only (pennies)"
+    dim "next: democtl build"
+}
+
+_foundation_status() {
+    header "Foundation (persistent tier)"
+    aws_show_identity || true
+    if aws_state_bucket_exists; then
+        ok "state bucket s3://${STATE_BUCKET}"
+    else
+        warn "state bucket s3://${STATE_BUCKET} does not exist - run 'democtl foundation up'"
+    fi
+    local name
+    for name in "$@"; do
+        if aws_state_exists "$name"; then
+            printf '  %-24s %s\n' "$name" "deployed"
+        else
+            printf '  %-24s %s\n' "$name" "not deployed"
+        fi
+    done
+}
+
+_foundation_down() {
+    local i_mean_it=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --i-mean-it) i_mean_it=1; shift ;;
+            *) die "foundation down: unexpected argument $1" ;;
+        esac
+    done
+
+    header "Destroy the persistent tier"
+    aws_show_identity || true
+    warn "this removes the VPC, security groups, IAM roles, and the imported SSH key pair."
+    warn "it does NOT delete s3://${STATE_BUCKET} or the Route53 zone - both outlive this repo."
+    hint "to remove the bucket too, afterwards: aws s3 rb s3://${STATE_BUCKET} --force"
+    echo >&2
+
+    [ "$i_mean_it" -eq 1 ] || die "refusing without --i-mean-it"
+
+    confirm_typed "$ENVIRONMENT" "type the environment name (${ENVIRONMENT}) to confirm: " \
+        || die "cancelled - nothing destroyed"
+
+    local ephemeral name
+    ephemeral=$(components_enabled ephemeral)
+    for name in $ephemeral; do
+        if aws_state_exists "$name"; then
+            die "${name} is still deployed - run 'democtl destroy' first"
+        fi
+    done
+
+    local persistent reversed
+    persistent=$(components_enabled persistent)
+    reversed=""
+    for name in $persistent; do reversed="${name} ${reversed}"; done
+
+    for name in $reversed; do
+        info "==> ${name}"
+        run_hook "$name" pre-destroy
+        comp_has_tofu "$name" && tofu_destroy "$name"
+        ok "    ${name} destroyed"
+    done
+}
+
+# =============================================================================
+# ssh
+# =============================================================================
+cmd_ssh() {
+    [ $# -ge 1 ] || die "usage: democtl ssh <component>"
+    components_discover
+    local name="$1"; shift
+    comp_index "$name" >/dev/null || die "unknown component: ${name}"
+
+    local cmd
+    cmd=$(component_output "$name" ssh_command) \
+        || die "${name} has no ssh_command output - is it deployed?"
+    [ -n "$cmd" ] || die "${name} has no ssh_command output - is it deployed?"
+
+    dim "$cmd"
+    eval "$cmd" "$@"
+}
+
+# =============================================================================
+# new-component
+# =============================================================================
+cmd_new_component() {
+    [ $# -eq 1 ] || die "usage: democtl new-component <name>"
+    local name="$1"
+    local template="${COMPONENTS_DIR}/_template"
+    local target="${COMPONENTS_DIR}/${name}"
+
+    case "$name" in
+        [a-z]*[a-z0-9]) ;;
+        *) die "component names are lowercase, start with a letter, and use hyphens: '${name}'" ;;
+    esac
+    case "$name" in
+        *[!a-z0-9-]*) die "component names may only contain a-z, 0-9 and hyphens: '${name}'" ;;
+    esac
+
+    [ -d "$template" ] || die "template not found at ${template}"
+    [ -e "$target" ] && die "${target} already exists"
+
+    cp -R "$template" "$target"
+    rm -f "${target}/common-vars.tf"
+
+    # The symlink is what gives a component the global variables. Relative,
+    # so the repo still works after a clone or a move.
+    ln -s ../../common-vars.tf "${target}/common-vars.tf"
+
+    local underscored="${name//-/_}"
+    local f
+    for f in "${target}/component.conf" "${target}/README.md" \
+             "${target}/main.tf" "${target}/variables.tf" "${target}/outputs.tf"; do
+        [ -f "$f" ] || continue
+        sed -e "s/__COMPONENT_NAME__/${name}/g" \
+            -e "s/__COMPONENT_UNDERSCORE__/${underscored}/g" "$f" > "${f}.new"
+        mv "${f}.new" "$f"
+    done
+
+    # The template ships KIND=docs so it can never deploy by accident.
+    # A real component starts as tofu.
+    sed -e 's/^KIND=docs/KIND=tofu/' "${target}/component.conf" > "${target}/component.conf.new"
+    mv "${target}/component.conf.new" "${target}/component.conf"
+
+    ok "created components/${name}"
+    echo
+    say "next:"
+    say "  1. edit components/${name}/component.conf     - ORDER, DEPENDS_ON, HOSTNAME_VAR"
+    say "  2. edit components/${name}/variables.tf       - this component's own settings"
+    say "  3. add an 'enable_${underscored} = true' block to terraform.tfvars.example AND terraform.tfvars"
+    say "  4. write components/${name}/main.tf and README.md"
+    say "  5. democtl list        - confirm it is discovered"
+    say "  6. democtl build --dry-run   - confirm where it lands in the order"
+}
+
+# =============================================================================
+# help
+# =============================================================================
+cmd_help() {
+    cat <<EOF
+
+democtl - control script for the SUSE/RGS AWS hybrid lab
+
+USAGE
+    democtl <command> [options]
+
+INSPECTION
+    list                    Every discovered component: lifecycle, enabled, deployed
+    status                  One health line per component
+    urls                    Every product URL in one place
+    output [component]      OpenTofu outputs
+    versions                Check rke2/rancher/cert-manager pinning against what is published
+    preflight               Tools, credentials, DNS, tfvars - everything build needs
+
+PERSISTENT TIER (created once, survives rebuilds, costs pennies)
+    foundation up           Create the state bucket, then the VPC, IAM, key pair
+    foundation status       What exists
+    foundation down --i-mean-it
+                            Tear the persistent tier down (never deletes S3 or DNS)
+
+EPHEMERAL TIER (everything billed by the hour)
+    build [--only X] [--with X,Y] [--dry-run]
+                            Deploy enabled ephemeral components in dependency order
+    destroy [--only X] [--dry-run]
+                            Tear them down in reverse order
+    plan [component]        tofu plan, without applying
+
+WORKING WITH A RUNNING LAB
+    ssh <component>         SSH in using that component's ssh_command output
+
+EXTENDING
+    new-component <name>    Scaffold components/<name> from the template
+
+NOT YET IMPLEMENTED
+    getkube, orphans, stop, start, cost   - see SPEC.md phases 3 and 3b
+
+OPTIONS
+    --dry-run               Print what build/destroy would do, change nothing
+    --only  X[,Y]           Act on exactly these components (plus dependencies)
+    --with  X[,Y]           Add these to the enabled set for one run
+
+ENVIRONMENT
+    AWS_PROFILE             Standard AWS CLI credential chain; democtl prints the
+                            account it resolved to before anything destructive
+    DEMOCTL_YES=1            Skip confirmation prompts (for scripted teardown)
+    NO_COLOR=1              Plain output
+
+FIRST RUN
+    cp terraform.tfvars.example terraform.tfvars
+    \$EDITOR terraform.tfvars        # every ##UPDATE## marker
+    democtl preflight
+    democtl foundation up
+    democtl build
+
+EOF
+}
+
+# =============================================================================
+# dispatch
+# =============================================================================
+main() {
+    local cmd="${1:-help}"
+    [ $# -gt 0 ] && shift
+
+    case "$cmd" in
+        list)           cmd_list "$@" ;;
+        preflight)      cmd_preflight "$@" ;;
+        versions)       cmd_versions "$@" ;;
+        foundation)     cmd_foundation "$@" ;;
+        build)          cmd_build "$@" ;;
+        destroy)        cmd_destroy "$@" ;;
+        plan)           cmd_plan "$@" ;;
+        output)         cmd_output "$@" ;;
+        urls)           cmd_urls "$@" ;;
+        status)         cmd_status "$@" ;;
+        ssh)            cmd_ssh "$@" ;;
+        new-component)  cmd_new_component "$@" ;;
+        help|--help|-h) cmd_help ;;
+        *)
+            err "unknown command: ${cmd}"
+            cmd_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

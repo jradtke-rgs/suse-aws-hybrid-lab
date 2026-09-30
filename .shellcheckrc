@@ -1,0 +1,6 @@
+# Follow `. "$DEMOCTL_LIB/common.sh"` style sources so the linter sees the
+# whole library rather than treating every shared helper as undefined.
+external-sources=true
+source-path=SCRIPTDIR
+source-path=SCRIPTDIR/lib
+source-path=Scripts/lib

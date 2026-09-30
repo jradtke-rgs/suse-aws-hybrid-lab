@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# =============================================================================
+# hooks/preflight.sh - fail early, before anything is created
+# =============================================================================
+# Runs during `democtl preflight` and at the start of `democtl build`, but
+# only when this component is enabled. This is where a missing licence key
+# or an unreachable registry should be caught - twenty seconds in, not
+# fifteen minutes into a bootstrap.
+#
+# A non-zero exit fails preflight.
+# =============================================================================
+set -euo pipefail
+
+# shellcheck source=../../../Scripts/lib/common.sh
+. "${DEMOCTL_LIB}/common.sh"
+
+fail=0
+
+licence=$(get_tfvar "${COMPONENT_NAME//-/_}_license")
+if [ -z "$licence" ]; then
+    err "${COMPONENT_NAME}: no licence key set in ${TFVARS_FILE}"
+    fail=1
+fi
+
+exit "$fail"

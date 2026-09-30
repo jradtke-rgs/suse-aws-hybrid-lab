@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# OpenTofu / Terraform
+# ---------------------------------------------------------------------------
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+# democtl generates one of these per component (see Scripts/lib/tfvars.sh) -
+# they hold only the variables that component declares, filtered out of the
+# root terraform.tfvars. Regenerated on every run; never commit them.
+*.auto.tfvars
+*.auto.tfvars.json
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# democtl-generated backend configuration (holds the state bucket name)
+backend.hcl
+
+# ---------------------------------------------------------------------------
+# Secrets and keys
+# ---------------------------------------------------------------------------
+*.pem
+*.key
+id_rsa*
+.env
+.env.local
+
+# ---------------------------------------------------------------------------
+# Kubeconfigs
+# ---------------------------------------------------------------------------
+.kube/
+*kubeconfig*
+
+# ---------------------------------------------------------------------------
+# OS / editor
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.backup
+
+# Python bytecode
+__pycache__/
+*.pyc

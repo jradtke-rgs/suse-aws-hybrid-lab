@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# =============================================================================
+# hooks/pre-destroy.sh - before `tofu destroy`
+# =============================================================================
+# Two jobs:
+#
+#   1. Save anything expensive to recreate into the lab-data bucket. The
+#      Let's Encrypt certificate is the canonical example: production allows
+#      5 duplicates per name per week, so re-issuing on every rebuild burns
+#      the budget in an afternoon.
+#
+#   2. Delete cluster-side resources that would otherwise strand AWS
+#      objects. A Kubernetes Service of type LoadBalancer creates an ELB
+#      that OpenTofu does not know about; destroying the node leaves the ELB
+#      running and billing.
+#
+# A non-zero exit stops the destroy, which is the right default: better to
+# stop than to destroy a node whose certificate was not saved.
+# =============================================================================
+set -euo pipefail
+
+# shellcheck source=../../../Scripts/lib/common.sh
+. "${DEMOCTL_LIB}/common.sh"
+
+info "backing up ${COMPONENT_NAME} state to s3://${STATE_BUCKET}/${LABDATA_PREFIX}/"
+
+# Example: save a TLS secret off the cluster before the node goes away.
+#   ssh_cmd=$(component_output "$COMPONENT_NAME" ssh_command)
+#   $ssh_cmd "kubectl -n cattle-system get secret tls-rancher-ingress -o yaml" \
+#       | aws s3 cp - "s3://${STATE_BUCKET}/${LABDATA_PREFIX}/tls/tls-rancher-ingress.yaml"
+
+ok "${COMPONENT_NAME} backed up"

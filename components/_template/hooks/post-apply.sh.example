@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# =============================================================================
+# hooks/post-apply.sh - after `tofu apply` succeeds
+# =============================================================================
+# The place for anything that is not AWS infrastructure: a Helm install onto
+# a cluster that now exists, waiting for a service to answer, seeding demo
+# data.
+#
+# A non-zero exit stops the build, so decide deliberately whether a step is
+# fatal. Waiting for a URL usually is; a cosmetic post-install step usually
+# is not - warn and carry on instead.
+# =============================================================================
+set -euo pipefail
+
+# shellcheck source=../../../Scripts/lib/common.sh
+. "${DEMOCTL_LIB}/common.sh"
+
+host=$(component_output "$COMPONENT_NAME" hostname)
+info "waiting for https://${host} to answer (up to 10 minutes)"
+
+deadline=$(( $(date +%s) + 600 ))
+until curl -sfk --max-time 5 "https://${host}/" >/dev/null 2>&1; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        err "${host} did not come up within 10 minutes"
+        hint "ssh in and read /var/log/demo-bootstrap.log: democtl ssh ${COMPONENT_NAME}"
+        exit 1
+    fi
+    sleep 15
+done
+
+ok "${host} is up"

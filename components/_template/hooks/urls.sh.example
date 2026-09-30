@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# =============================================================================
+# hooks/urls.sh - one "label<TAB>url" line per URL, for `democtl urls`
+# =============================================================================
+# To activate: rename to urls.sh and chmod +x. democtl ignores a hook that
+# is not executable, which is what makes these examples inert.
+#
+# Every hook runs from its own component directory with this environment:
+#
+#   REPO_ROOT       repo root (absolute)
+#   DEMOCTL_LIB     $REPO_ROOT/Scripts/lib - source common.sh from here
+#   COMPONENT_DIR   this directory (absolute)
+#   COMPONENT_NAME  this component's name
+#   TFVARS_FILE     the root terraform.tfvars
+#   ENVIRONMENT     lab name / resource prefix
+#   AWS_REGION      region
+#   ROOT_DOMAIN, SUBDOMAIN
+#   STATE_BUCKET, LABDATA_PREFIX
+#
+# Sourcing common.sh additionally gives you:
+#   info/ok/warn/err/die/dim   logging (all to stderr, so stdout stays clean)
+#   get_tfvar <key> [default]  read a setting
+#   fqdn_for <hostname>        <hostname>.<subdomain>.<root_domain>
+#   component_output <component> <output>
+#                              the ONLY supported way to read another
+#                              component's outputs. Do not open a sibling's
+#                              state file by path.
+# =============================================================================
+set -euo pipefail
+
+# shellcheck source=../../../Scripts/lib/common.sh
+. "${DEMOCTL_LIB}/common.sh"
+
+url=$(component_output "$COMPONENT_NAME" "${COMPONENT_NAME//-/_}_url") || exit 0
+[ -n "$url" ] || exit 0
+
+printf '%s\t%s\n' "$COMPONENT_NAME" "$url"

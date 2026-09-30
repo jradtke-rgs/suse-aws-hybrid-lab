@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# =============================================================================
+# hooks/status.sh - ONE line summarising health, for `democtl status`
+# =============================================================================
+# Keep it fast and keep it non-fatal. democtl runs status hooks with their
+# errors suppressed and falls back to "deployed"/"not deployed" if this
+# prints nothing, so a hook that hangs is worse than a hook that is missing.
+# Give every network call a timeout.
+# =============================================================================
+set -euo pipefail
+
+# shellcheck source=../../../Scripts/lib/common.sh
+. "${DEMOCTL_LIB}/common.sh"
+
+host=$(component_output "$COMPONENT_NAME" hostname) || exit 0
+[ -n "$host" ] || exit 0
+
+if curl -sfk --max-time 5 "https://${host}/" >/dev/null 2>&1; then
+    printf 'up at https://%s\n' "$host"
+else
+    printf 'deployed, not answering on https://%s yet\n' "$host"
+fi

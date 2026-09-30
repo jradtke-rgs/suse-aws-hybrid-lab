@@ -1,0 +1,168 @@
+# =============================================================================
+# terraform.tfvars.example
+# =============================================================================
+# Copy to terraform.tfvars (gitignored) and fill in every ##UPDATE## marker.
+# `democtl preflight` refuses to build while any marker is left.
+#
+#     cp terraform.tfvars.example terraform.tfvars
+#     $EDITOR terraform.tfvars
+#     Scripts/democtl preflight
+#
+# One file holds settings for every component, grouped below by which
+# component owns them. You never pass it to OpenTofu yourself: democtl
+# writes each component a democtl.auto.tfvars containing only the variables
+# that component declares, which is what keeps "undeclared variable"
+# warnings out of the output.
+#
+# When you add a component, add its block here too. preflight warns when
+# this file defines something your terraform.tfvars does not.
+# =============================================================================
+
+
+# =============================================================================
+# GLOBAL - identity and placement
+# =============================================================================
+
+# Names and tags everything: resource name prefix, the Environment tag that
+# `democtl orphans` keys off, the DNS subdomain, and the state key prefix.
+environment = "suse-aws-hybrid-lab"
+project     = "suse-aws-hybrid-lab"
+owner       = "your-name" ##UPDATE##
+
+# Single region, single AZ. This is a demo lab: cross-AZ data transfer costs
+# money and buys resilience nobody is going to test.
+aws_region         = "us-east-2"
+availability_zones = ["us-east-2a"]
+
+vpc_cidr = "10.0.0.0/16"
+
+# A NAT Gateway costs more per month than everything else here combined, and
+# every instance in this lab sits in a public subnet. Left off deliberately.
+enable_nat_gateway = false
+
+# S3 bucket for OpenTofu state and lab data, under the prefixes state/ and
+# labdata/. Created and configured by `democtl foundation up` using the AWS
+# CLI - not by OpenTofu, and never deleted by this repo. Bucket names are
+# globally unique, so change this if the default is taken.
+state_bucket = "suse-aws-hybrid-lab"
+
+
+# =============================================================================
+# GLOBAL - access control
+# =============================================================================
+# Narrow these to your own address. The open default is so that a first run
+# works from anywhere; it also means anyone who finds the IP can reach the
+# SSH port and the Kubernetes API.
+#
+#     curl -s https://checkip.amazonaws.com
+#
+allowed_ssh_cidr_blocks = ["0.0.0.0/0"] ##UPDATE##
+allowed_web_cidr_blocks = ["0.0.0.0/0"]
+
+# Imported into AWS once by foundation and reused by every instance, so an
+# interrupted destroy can no longer leave a "key pair already exists" stray.
+#
+#     ssh-keygen -t ed25519 -f ~/.ssh/suse-aws-hybrid-lab -C suse-aws-hybrid-lab
+#     cat ~/.ssh/suse-aws-hybrid-lab.pub
+#
+ssh_public_key       = "" ##UPDATE##
+ssh_private_key_path = "~/.ssh/suse-aws-hybrid-lab"
+
+
+# =============================================================================
+# GLOBAL - DNS
+# =============================================================================
+# The public hosted zone for <subdomain>.<root_domain> must already exist and
+# be delegated. This repo reads it and writes records into it, but never
+# creates or deletes the zone itself.
+#
+# Find the zone ID (the filtered form - the unfiltered query returns every
+# zone your credentials can see):
+#     aws route53 list-hosted-zones-by-name \
+#       --dns-name suse-aws-hybrid-lab.kubernerdes.com \
+#       --query "HostedZones[?Name=='suse-aws-hybrid-lab.kubernerdes.com.'].Id | [0]" \
+#       --output text
+#
+root_domain     = "kubernerdes.com" ##UPDATE##
+subdomain       = "suse-aws-hybrid-lab"
+route53_zone_id = "" # leave empty to look it up by name
+
+
+# =============================================================================
+# GLOBAL - TLS
+# =============================================================================
+# One wildcard certificate (*.<subdomain>.<root_domain>) covers the whole
+# lab. Let's Encrypt limits duplicates to 5 per week per exact set of names,
+# so a shared wildcard means one budget for every product rather than one
+# per product - and a component added later needs no certificate work at all.
+enable_letsencrypt = true
+letsencrypt_email  = "you@example.com" ##UPDATE##
+
+# Keep this on "staging" while iterating. Staging certificates are untrusted
+# (your browser will warn) but effectively unlimited. Switch to "production"
+# once the certificate backup/restore path has run at least once on this
+# account, so a rebuild restores the certificate instead of re-issuing it.
+letsencrypt_environment = "staging"
+
+
+# =============================================================================
+# GLOBAL - Carbide Secured Registry
+# =============================================================================
+# Credentials from the Carbide Portal. The registry is Harbor-backed, which
+# matters when debugging: it answers 401/403 identically for "wrong
+# credentials" and "no such repository or tag". Before concluding you have an
+# entitlement problem, check the registry directly:
+#
+#     curl -su "$USER:$PASS" https://registry.ranchercarbide.dev/v2/_catalog
+#
+carbide_registry = "registry.ranchercarbide.dev"
+carbide_username = "" ##UPDATE##
+carbide_password = "" ##UPDATE##
+
+
+# =============================================================================
+# GLOBAL - base image and versions
+# =============================================================================
+# Pinned minor version. The looser "suse-sle-micro-6-*" filter combined with
+# most_recent sorts by publication date, so a freshly published 6.0 image
+# beats an older 6.1 one and you silently get the older minor version.
+sl_micro_version = "6-1"
+ami_architecture = "x86_64"
+ami_id           = "" # set to pin an exact AMI and stop tracking new publications
+
+# These three are coupled. Check the pairing against what is actually
+# published before changing any of them:
+#
+#     Scripts/democtl versions
+#
+# Do not leave rke2_version empty. "Latest stable" is currently ABOVE the
+# Rancher chart's Kubernetes ceiling, so an unpinned install fails at
+# `helm install rancher` - twelve minutes into an otherwise healthy
+# bootstrap.
+rke2_version         = "v1.36.4+rke2r1" # Kubernetes 1.36
+cert_manager_version = "1.21.2"
+
+
+# =============================================================================
+# COMPONENT: foundation  (persistent - created once, survives rebuilds)
+# =============================================================================
+
+# Allocate a persistent Elastic IP per label, e.g. ["rancher"], so a DNS name
+# points at an address that never changes across rebuilds.
+#
+# Read the cost carefully, because it is not what it looks like. AWS bills
+# EVERY public IPv4 address at about $3.65/month - including the one an
+# instance gets automatically - so a persistent EIP costs nothing extra while
+# the lab is running. What it costs is $3.65/month per address while the lab
+# is torn down and the address sits idle. Empty means the A record is simply
+# updated on each build, which is free and takes a DNS TTL to propagate.
+persistent_eip_names = []
+
+# How long to keep superseded versions of state and lab-data objects.
+labdata_retention_days = 90
+
+
+# =============================================================================
+# COMPONENT: rancher-manager  (ephemeral - billed by the hour)
+# =============================================================================
+# Settings arrive with the component in Phase 3.
