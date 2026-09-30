@@ -636,3 +636,30 @@ SUSE products generally, not only RGS.
 - `persistent_eip_names` is a list of labels rather than a single
   `persist_rancher_eip` bool, so a second component can have a stable address
   without a schema change.
+
+### 2026-09-30 — Carbide generalized to an optional private registry
+
+Corrected after the operator's repeated, explicit feedback that this is not
+an RGS-specific project (the same reasoning behind the earlier
+`rgsctl` → `democtl` rename): Carbide is RGS's own branded registry, not a
+generic SUSE/Rancher concern, and requiring its credentials before any
+build - even one that never touches an RGS product - was a leftover
+assumption from this spec's original framing.
+
+`carbide_registry`/`carbide_username`/`carbide_password` (common-vars.tf)
+are now `private_registry`/`private_registry_username`/
+`private_registry_password`: empty by default, no `##UPDATE##` markers, and
+genuinely optional - nodes pull public images with no private registry
+configured at all. `rancher-manager`'s `carbide_rancher_chart`/
+`carbide_rancher_image` are now `rancher_chart_override`/
+`rancher_image_override` for the same reason - a private chart/image
+source is a real but generic need, not a Carbide-specific one.
+`user-data.sh`'s registry-configuration functions and log messages were
+reworded to match; behavior is unchanged (empty values already skipped
+registry auth entirely, same as before).
+
+Every `registry.ranchercarbide.dev` / "Carbide" mention in §6 and §9 of
+this spec's original body is retained as-is - it describes the RGS-specific
+reference implementation this repo was reviewed against in Phase 0, not a
+requirement of this repo. Treat this entry, not those, as authoritative for
+what the code actually does now.

@@ -95,7 +95,7 @@ fqdn_for() {
 # tfvars_exists - just the file-presence check, no placeholder scan.
 #
 # Split out from tfvars_require so a command that only needs foundation's
-# settings (which never include a Carbide password or an LE email) is not
+# settings (which never include a private-registry password or an LE email) is not
 # blocked on placeholders it will never read. See _tfvars_placeholders below
 # for the scoped version those commands use instead.
 # ---------------------------------------------------------------------------

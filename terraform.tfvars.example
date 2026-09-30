@@ -111,18 +111,21 @@ letsencrypt_environment = "staging"
 
 
 # =============================================================================
-# GLOBAL - Carbide Secured Registry
+# GLOBAL - optional private registry
 # =============================================================================
-# Credentials from the Carbide Portal. The registry is Harbor-backed, which
-# matters when debugging: it answers 401/403 identically for "wrong
-# credentials" and "no such repository or tag". Before concluding you have an
-# entitlement problem, check the registry directly:
+# Entirely optional - leave private_registry empty (the default) and nodes
+# pull RKE2, Rancher, and everything else from the public registries, no
+# auth needed. Set it if you have your own mirror, a curated/hardened image
+# source, or any other private registry. If it happens to be Harbor-backed,
+# note that Harbor answers 401/403 identically for "wrong credentials" and
+# "no such repository or tag" - before concluding you have an entitlement
+# problem, check the registry directly:
 #
-#     curl -su "$USER:$PASS" https://registry.ranchercarbide.dev/v2/_catalog
+#     curl -su "$USER:$PASS" https://your-registry.example.com/v2/_catalog
 #
-carbide_registry = "registry.ranchercarbide.dev"
-carbide_username = "" ##UPDATE##
-carbide_password = "" ##UPDATE##
+private_registry          = ""
+private_registry_username = ""
+private_registry_password = ""
 
 
 # =============================================================================
@@ -182,8 +185,9 @@ rancher_root_volume_size = 50
 # kubeVersion ceiling - run `democtl versions` before changing any of them.
 rancher_version = "2.15.2"
 
-# Leave both empty to install the public rancher-stable chart with images
-# sourced via registries.yaml (Carbide's own chart hosting is unconfirmed -
-# see rancher-manager/README.md).
-carbide_rancher_chart = ""
-carbide_rancher_image = ""
+# Leave both empty to install the public rancher-stable chart with public
+# images - the default, and all a normal build needs. Only set these if you
+# have a private chart or image source you'd rather install from instead -
+# see rancher-manager/README.md.
+rancher_chart_override = ""
+rancher_image_override = ""

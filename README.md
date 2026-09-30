@@ -1,10 +1,10 @@
 # suse-aws-hybrid-lab
 
-A demo environment in AWS for SUSE and Rancher Government Solutions
-products, driven from a laptop with bash, OpenTofu and the AWS CLI.
+A demo environment in AWS for SUSE and Rancher products, driven from a
+laptop with bash, OpenTofu and the AWS CLI.
 
-**v1:** a single-node Rancher Manager (RKE2 on SL-Micro, images from the
-Carbide Secured Registry) reachable over HTTPS on a real DNS name.
+**v1:** a single-node Rancher Manager (RKE2 on SL-Micro) reachable over
+HTTPS on a real DNS name.
 
 **Later:** Harbor, SUSE Security, SUSE Observability and whatever comes
 next — added by dropping in a component directory, with no changes to the
@@ -83,7 +83,7 @@ Scripts/democtl destroy           # ephemeral only; foundation stays
 | AWS CLI | v2, with working credentials from the standard chain (`AWS_PROFILE`, SSO, env) |
 | python3 | Used to filter `terraform.tfvars` per component and to parse JSON |
 | AWS | A **public** Route53 hosted zone for `<subdomain>.<root_domain>` |
-| Carbide | Portal credentials for `registry.ranchercarbide.dev` |
+| Private registry | Optional. Only needed if you want nodes to pull from your own mirror or a curated image source instead of the public registries. |
 
 This repo never stores, prompts for, or writes an AWS key.
 

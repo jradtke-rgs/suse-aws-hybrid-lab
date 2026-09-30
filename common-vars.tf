@@ -201,28 +201,34 @@ variable "letsencrypt_environment" {
 }
 
 # -----------------------------------------------------------------------------
-# Carbide Secured Registry
+# Optional private registry
 # -----------------------------------------------------------------------------
-# registry.ranchercarbide.dev is the acquisition point for RGS-hardened
-# images, and is itself Harbor-backed. Note that Harbor answers 401/403
-# identically for "wrong credentials" and "that repository or tag does not
-# exist" - before concluding you have an entitlement problem, check
-# /v2/_catalog and /v2/<repo>/tags/list directly.
-variable "carbide_registry" {
-  description = "Carbide Secured Registry hostname."
+# Entirely optional. This lab is not tied to any one vendor's registry -
+# leave private_registry empty (the default) and nodes pull RKE2, Rancher,
+# and everything else from the normal public registries, no auth needed.
+#
+# Set it if you have your own mirror, a hardened/curated image source, or
+# any other private registry you want nodes to authenticate to (RKE2's
+# registries.yaml) and Rancher to use as its system-default-registry. If
+# that registry happens to be Harbor-backed (or Harbor itself), note that
+# Harbor answers 401/403 identically for "wrong credentials" and "that
+# repository or tag does not exist" - before concluding you have an
+# entitlement problem, check /v2/_catalog and /v2/<repo>/tags/list directly.
+variable "private_registry" {
+  description = "Private registry hostname. Empty (the default) skips registry auth entirely and uses public images."
   type        = string
-  default     = "registry.ranchercarbide.dev"
+  default     = ""
 }
 
-variable "carbide_username" {
-  description = "Carbide Portal registry username."
+variable "private_registry_username" {
+  description = "Private registry username. Only meaningful when private_registry is set."
   type        = string
   default     = ""
   sensitive   = true
 }
 
-variable "carbide_password" {
-  description = "Carbide Portal registry password or token."
+variable "private_registry_password" {
+  description = "Private registry password or token. Only meaningful when private_registry is set."
   type        = string
   default     = ""
   sensitive   = true
@@ -247,7 +253,7 @@ variable "sl_micro_version" {
 }
 
 variable "ami_architecture" {
-  description = "CPU architecture. arm64 SL-Micro AMIs exist and Graviton instances are roughly 20 percent cheaper, but Carbide's arm64 image coverage is unverified - leave this on x86_64 unless you are testing that path."
+  description = "CPU architecture. arm64 SL-Micro AMIs exist and Graviton instances are roughly 20 percent cheaper, but arm64 image coverage for whatever you install is unverified - leave this on x86_64 unless you are testing that path."
   type        = string
   default     = "x86_64"
 

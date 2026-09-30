@@ -167,15 +167,15 @@ resource "aws_instance" "rancher" {
     hostname_short = var.hostname_rancher
     wildcard_fqdn  = local.wildcard_fqdn
 
-    rke2_version          = var.rke2_version
-    rancher_version       = var.rancher_version
-    cert_manager_version  = var.cert_manager_version
-    carbide_rancher_chart = var.carbide_rancher_chart
-    carbide_rancher_image = var.carbide_rancher_image
+    rke2_version           = var.rke2_version
+    rancher_version        = var.rancher_version
+    cert_manager_version   = var.cert_manager_version
+    rancher_chart_override = var.rancher_chart_override
+    rancher_image_override = var.rancher_image_override
 
-    carbide_registry = var.carbide_registry
-    carbide_username = var.carbide_username
-    carbide_password = var.carbide_password
+    private_registry          = var.private_registry
+    private_registry_username = var.private_registry_username
+    private_registry_password = var.private_registry_password
 
     enable_letsencrypt      = local.le_enabled
     letsencrypt_email       = var.letsencrypt_email

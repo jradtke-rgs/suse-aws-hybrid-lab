@@ -75,7 +75,7 @@ tofu_init() {
 # merely what it DECLARES. Those are different sets: every component
 # symlinks the same common-vars.tf, so "declared by this component" is
 # identical across every component in the repo - checking against it would
-# make `foundation up` demand a Carbide password and a Let's Encrypt email
+# make `foundation up` demand a private-registry password and a Let's Encrypt email
 # neither foundation/main.tf nor foundation/outputs.tf ever reference.
 # "Used" means textually referenced as var.NAME somewhere in this
 # component's OWN main.tf/outputs.tf (never variables.tf or common-vars.tf -

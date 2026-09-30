@@ -19,7 +19,7 @@ an association to `foundation`'s persistent Elastic IP. No IAM — it runs as
 | | |
 |---|---|
 | Instance | `t3.large` (2 vCPU / 8GB) — the smallest type that runs RKE2 + Rancher + cert-manager together without swapping; see the comment on `rancher_instance_type` in `variables.tf` |
-| Root volume | 50GB gp3, encrypted — the stack (RKE2, containerd, Helm, cert-manager, Rancher, Carbide images) uses 15–20GB in practice; billed even while stopped |
+| Root volume | 50GB gp3, encrypted — the stack (RKE2, containerd, Helm, cert-manager, Rancher, and whatever images get pulled for all of them) uses 15–20GB in practice; billed even while stopped |
 | Public IP | ~$3.65/month either way (AWS bills every public IPv4) — see `components/foundation/README.md` |
 
 Destroy it with `democtl destroy` when not actively demoing; `foundation`
@@ -71,9 +71,11 @@ present.
 
 ## Manual steps
 
-None required for a normal build. If `carbide_username`/`carbide_password`
+None required for a normal build. `private_registry` is entirely optional —
+leave it empty and nodes pull RKE2, Rancher, and everything else from the
+public registries. If `private_registry_username`/`private_registry_password`
 are set, `configure_system_default_registry` (in `user-data.sh`) points
-Rancher's `system-default-registry` at Carbide automatically — **unverified
+Rancher's `system-default-registry` at it automatically — **unverified
 live** that a downstream node actually inherits working auth from this yet.
 Fallback: Rancher UI → **Settings → Advanced Settings** (`system-default-registry`)
 and **Settings → Private Registry**.
@@ -91,8 +93,7 @@ and **Settings → Private Registry**.
 - **`rke2_version` / `rancher_version` / `cert_manager_version` are coupled**
   — Rancher's chart pins a Kubernetes ceiling, cert-manager supports a
   rolling window. Run `democtl versions` before changing any of them.
-- **Rancher image source is unverified**, same as the reference
-  implementation: the public `rancher-stable` chart with images sourced via
-  Carbide's `registries.yaml`, not a Carbide-hosted chart —
-  `carbide_rancher_chart`/`carbide_rancher_image` exist to override once
-  that path is confirmed.
+- **By default, Rancher installs from the public `rancher-stable` chart**
+  with public images — no private registry needed. `rancher_chart_override`/
+  `rancher_image_override` exist if you have a private chart or image
+  source you'd rather install from instead.

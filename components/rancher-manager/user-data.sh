@@ -46,19 +46,19 @@ PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
 
 # =============================================================================
 configure_registries() {
-    step "Configuring Carbide registry auth for RKE2's containerd"
+    step "Configuring private registry auth for RKE2's containerd"
     mkdir -p /etc/rancher/rke2
-%{ if carbide_username != "" && carbide_password != "" ~}
+%{ if private_registry_username != "" && private_registry_password != "" ~}
     cat <<REGISTRIES_EOF > /etc/rancher/rke2/registries.yaml
 configs:
-  "${carbide_registry}":
+  "${private_registry}":
     auth:
-      username: "${carbide_username}"
-      password: "${carbide_password}"
+      username: "${private_registry_username}"
+      password: "${private_registry_password}"
 REGISTRIES_EOF
     chmod 600 /etc/rancher/rke2/registries.yaml
 %{ else ~}
-    log "no Carbide credentials supplied - RKE2 will only pull public images"
+    log "no private registry configured - RKE2 will pull public images"
 %{ endif ~}
 }
 
@@ -217,9 +217,9 @@ install_rancher() {
     step "Installing Rancher ${rancher_version}"
     kubectl create namespace cattle-system --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-%{ if carbide_rancher_chart != "" ~}
-    log "installing from Carbide-hosted chart: ${carbide_rancher_chart}"
-    helm install rancher "${carbide_rancher_chart}" \
+%{ if rancher_chart_override != "" ~}
+    log "installing from private chart: ${rancher_chart_override}"
+    helm install rancher "${rancher_chart_override}" \
         --namespace cattle-system \
         --set hostname="${hostname}" \
         --set replicas=1 \
@@ -240,8 +240,8 @@ install_rancher() {
 %{ if enable_letsencrypt ~}
         --set ingress.tls.source=secret \
 %{ endif ~}
-%{ if carbide_rancher_image != "" ~}
-        --set rancherImage="${carbide_rancher_image}" \
+%{ if rancher_image_override != "" ~}
+        --set rancherImage="${rancher_image_override}" \
 %{ endif ~}
         --version "${rancher_version}" \
         --wait --timeout 15m
@@ -254,14 +254,14 @@ install_rancher() {
 
 # =============================================================================
 # Non-fatal by design: this is a convenience that saves manually pointing
-# Rancher at Carbide after the fact (Settings -> Advanced Settings), not a
+# Rancher at private_registry after the fact (Settings -> Advanced Settings), not a
 # correctness requirement for the install that already succeeded above.
 # Unverified live that a downstream node actually inherits working auth from
-# this - see README's "Carbide as system-default-registry" caveat.
+# this - see README's "private registry as system-default-registry" caveat.
 # =============================================================================
 configure_system_default_registry() {
-%{ if carbide_username != "" && carbide_password != "" ~}
-    step "Configuring Carbide as Rancher's system-default-registry"
+%{ if private_registry_username != "" && private_registry_password != "" ~}
+    step "Configuring the private registry as Rancher's system-default-registry"
 
     ready=false
     for _ in $(seq 1 30); do
@@ -271,17 +271,17 @@ configure_system_default_registry() {
 
     if [ "$ready" = "true" ]; then
         if kubectl patch settings.management.cattle.io system-default-registry \
-            --type=merge -p "{\"value\":\"${carbide_registry}\"}"; then
-            log "system-default-registry set to ${carbide_registry}"
+            --type=merge -p "{\"value\":\"${private_registry}\"}"; then
+            log "system-default-registry set to ${private_registry}"
         else
             log "WARNING: failed to patch system-default-registry - set it manually (Settings -> Advanced Settings)"
         fi
 
         if kubectl create secret docker-registry cattle-private-registry \
             --namespace cattle-system \
-            --docker-server="${carbide_registry}" \
-            --docker-username="${carbide_username}" \
-            --docker-password="${carbide_password}" \
+            --docker-server="${private_registry}" \
+            --docker-username="${private_registry_username}" \
+            --docker-password="${private_registry_password}" \
             --dry-run=client -o yaml | kubectl apply -f -; then
             log "cattle-private-registry credentials secret created"
         else
@@ -291,7 +291,7 @@ configure_system_default_registry() {
         log "WARNING: system-default-registry Setting never appeared - configure it manually"
     fi
 %{ else ~}
-    step "No Carbide credentials supplied - skipping system-default-registry"
+    step "No private registry configured - skipping system-default-registry"
 %{ endif ~}
 }
 
